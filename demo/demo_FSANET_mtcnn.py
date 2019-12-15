@@ -14,6 +14,8 @@ from keras import backend as K
 from keras.layers import Average
 from keras.models import Model
 
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def draw_axis(img, yaw, pitch, roll, tdx=None, tdy=None, size=80):
 
@@ -56,7 +58,7 @@ def draw_results_mtcnn(detected, input_img, faces, ad, img_size, img_w, img_h, m
     if len(detected) > 0:
         for i, d in enumerate(detected):
             #x1, y1, x2, y2, w, h = d.left(), d.top(), d.right() + 1, d.bottom() + 1, d.width(), d.height()
-            if d['confidence'] > 0.95:
+            if d['confidence'] > 0.45:
                 x1, y1, w, h = d['box']
 
                 x2 = x1+w
@@ -81,9 +83,19 @@ def draw_results_mtcnn(detected, input_img, faces, ad, img_size, img_w, img_h, m
 
                 input_img[yw1:yw2 + 1, xw1:xw2 + 1, :] = img
 
-    cv2.imshow("result", input_img)
+    #cv2.imshow("result", input_img)
     
     return input_img  # ,time_network,time_plot
+
+def adjust_gamma(image, gamma=1.0):
+    # build a lookup table mapping the pixel values [0, 255] to
+    # their adjusted gamma values
+    invGamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** invGamma) * 255
+                      for i in np.arange(0, 256)]).astype("uint8")
+
+    # apply gamma correction using the lookup table
+    return cv2.LUT(image, table)
 
 
 def main():
@@ -106,7 +118,7 @@ def main():
     time_detection = 0
     time_network = 0
     time_plot = 0
-    skip_frame = 5  # every 5 frame do 1 detection and network forward propagation
+    skip_frame = 1  # every 5 frame do 1 detection and network forward propagation
     ad = 0.6
 
     # Parameters
@@ -154,9 +166,9 @@ def main():
     model = Model(inputs=inputs, outputs=avg_model)
 
     # capture video
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024*1)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768*1)
+    cap = cv2.VideoCapture('/dfs/sumeethn/data/face_pose/face_pose_iphone_td_newhire.m4v')
+    #cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024*1)
+    #cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768*1)
 
     print('Start detecting pose ...')
     detected_pre = []
@@ -164,6 +176,12 @@ def main():
     while True:
         # get video frame
         ret, input_img = cap.read()
+        print(img_idx)
+        # input_img = input_img[700:700 + 300, 700:300 + 600, :]  # drinking water
+        # input_img = input_img[800:1150, 1500:1850, :]  # glasses
+        img_h, img_w, _ = np.shape(input_img)
+        input_img = input_img[0:int(img_h/2.0), 0:int(img_w/2.0), :]
+        input_img = adjust_gamma(input_img, 0.7)
 
         img_idx = img_idx + 1
         img_h, img_w, _ = np.shape(input_img)
@@ -177,6 +195,7 @@ def main():
             gray_img = cv2.cvtColor(input_img, cv2.COLOR_BGR2GRAY)
             # detected = face_cascade.detectMultiScale(gray_img, 1.1)
             detected = detector.detect_faces(input_img)
+            print(detected)
 
             if len(detected_pre) > 0 and len(detected) == 0:
                 detected = detected_pre
@@ -194,7 +213,8 @@ def main():
         if len(detected) > len(detected_pre) or img_idx % (skip_frame*3) == 0:
             detected_pre = detected
 
-        key = cv2.waitKey(1)
+
+        cv2.imwrite('img/' + str(img_idx) + '.png', input_img)
 
 
 if __name__ == '__main__':

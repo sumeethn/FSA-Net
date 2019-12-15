@@ -8,11 +8,22 @@ from math import cos, sin
 from lib.FSANET_model import *
 import numpy as np
 from keras.layers import Average
+import pandas as pd
+
 # from moviepy.editor import *
 # from mtcnn.mtcnn import MTCNN
 
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+CAMERA_ID = 1
+cam_meta_data = list()
+
+
+#TODO 1. Storing of results in the following format: date-time, camera_id, frame_id, face_x, face_y, face_w, face_h, dist_screen, pitch, roll, yaw
+#TODO 2. TILING of images for face detection.
+
 def draw_axis(img, yaw, pitch, roll, tdx=None, tdy=None, size = 50):
-    print(yaw,roll,pitch)
+    print(pitch, roll, yaw)
     pitch = pitch * np.pi / 180
     yaw = -(yaw * np.pi / 180)
     roll = roll * np.pi / 180
@@ -44,8 +55,11 @@ def draw_axis(img, yaw, pitch, roll, tdx=None, tdy=None, size = 50):
 
     return img
     
-def draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model,time_detection,time_network,time_plot):
-    
+def draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model, img_idx):
+
+    cam_meta_data[img_idx]['detections'] = list()
+    cam_meta_data[img_idx]['pose'] = list()
+
     # loop over the detections
     if detected.shape[2]>0:
         for i in range(0, detected.shape[2]):
@@ -54,17 +68,22 @@ def draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model,time
             confidence = detected[0, 0, i, 2]
 
             # filter out weak detections
-            if confidence > 0.5:
+            if confidence > 0.2:
                 # compute the (x, y)-coordinates of the bounding box for
                 # the face and extract the face ROI
                 (h0, w0) = input_img.shape[:2]
                 box = detected[0, 0, i, 3:7] * np.array([w0, h0, w0, h0])
+
                 (startX, startY, endX, endY) = box.astype("int")
+
                 # print((startX, startY, endX, endY))
                 x1 = startX
                 y1 = startY
                 w = endX - startX
                 h = endY - startY
+
+                # log
+                cam_meta_data[img_idx]['detections'].append([startX, startY, endX - startX, endY - startY])
                 
                 x2 = x1+w
                 y2 = y1+h
@@ -82,12 +101,27 @@ def draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model,time
                 
                 face = face.squeeze()
                 img = draw_axis(input_img[yw1:yw2 + 1, xw1:xw2 + 1, :], p_result[0][0], p_result[0][1], p_result[0][2])
+
+                cam_meta_data[img_idx]['pose'].append([p_result[0][1], p_result[0][2], -1*p_result[0][0]])
+
                 
                 input_img[yw1:yw2 + 1, xw1:xw2 + 1, :] = img
                 
-    cv2.imshow("result", input_img)
+    #cv2.imwrite("img/result" + str(img_idx) + '.png', input_img)
     
     return input_img #,time_network,time_plot
+
+
+def adjust_gamma(image, gamma=1.0):
+    # build a lookup table mapping the pixel values [0, 255] to
+    # their adjusted gamma values
+    invGamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** invGamma) * 255
+                      for i in np.arange(0, 256)]).astype("uint8")
+
+    # apply gamma correction using the lookup table
+    return cv2.LUT(image, table)
+
 
 def main():
     try:
@@ -105,9 +139,6 @@ def main():
     lambda_d = 1
     img_idx = 0
     detected = '' #make this not local variable
-    time_detection = 0
-    time_network = 0
-    time_plot = 0
     skip_frame = 1 # every 5 frame do 1 detection and network forward propagation
     ad = 0.6
 
@@ -162,55 +193,67 @@ def main():
     net = cv2.dnn.readNetFromCaffe(protoPath, modelPath)
 
     # capture video
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024*1)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768*1)
+    cap = cv2.VideoCapture('/dfs/sumeethn/data/face_pose/face_pose_iphone_td_newhire.m4v')
+    #cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024*1)
+    #cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768*1)
     
 
 
     print('Start detecting pose ...')
     detected_pre = np.empty((1,1,1))
 
-    while True:
-        # get video frame
-        ret, input_img = cap.read()
+    ret, input_img = cap.read()
+    print('*********', np.shape(input_img))
+    while ret:
 
-        img_idx = img_idx + 1
+        # log
+        cam_meta_data.append(dict())
+        cam_meta_data[img_idx]['camera_id'] = CAMERA_ID
+        cam_meta_data[img_idx]['frame_id'] = img_idx
+
         img_h, img_w, _ = np.shape(input_img)
+        print(img_idx)
+        #input_img = input_img[700:700+300, 700:300+600, :] # drinking water
+        input_img = input_img[800:1150, 1500:1850, :]  # glasses
+        input_img = adjust_gamma(input_img, 0.5)
+        #new_image = cv.convertScaleAbs(input_img, alpha=alpha, beta=beta)
+        if img_idx==0 or img_idx%skip_frame == 0:
 
-        
-        if img_idx==1 or img_idx%skip_frame == 0:
-            time_detection = 0
-            time_network = 0
-            time_plot = 0
-            
             # detect faces using LBP detector
             gray_img = cv2.cvtColor(input_img,cv2.COLOR_BGR2GRAY)
             # detected = face_cascade.detectMultiScale(gray_img, 1.1)
             # detected = detector.detect_faces(input_img)
             # pass the blob through the network and obtain the detections and
             # predictions
+
+
             blob = cv2.dnn.blobFromImage(cv2.resize(input_img, (300, 300)), 1.0,
                 (300, 300), (104.0, 177.0, 123.0))
             net.setInput(blob)
             detected = net.forward()
+
 
             if detected_pre.shape[2] > 0 and detected.shape[2] == 0:
                 detected = detected_pre
 
             faces = np.empty((detected.shape[2], img_size, img_size, 3))
 
-            input_img = draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model,time_detection,time_network,time_plot)
-            cv2.imwrite('img/'+str(img_idx)+'.png',input_img)
-            
+            input_img = draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model, img_idx)
+
         else:
-            input_img = draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model,time_detection,time_network,time_plot)
+            input_img = draw_results_ssd(detected,input_img,faces,ad,img_size,img_w,img_h,model, img_idx)
 
-
+        cv2.imwrite('img/'+str(img_idx)+'.png', input_img)
         if detected.shape[2] > detected_pre.shape[2] or img_idx%(skip_frame*3) == 0:
             detected_pre = detected
 
-        key = cv2.waitKey(1)
-        
+        # get the next video frame
+        img_idx = img_idx + 1
+        ret, input_img = cap.read()
+
+    cam_meta_data_df = pd.DataFrame(cam_meta_data, columns=['camera_id', 'frame_id', 'detections', 'pose'])
+    print(cam_meta_data_df)
+
+
 if __name__ == '__main__':
     main()
